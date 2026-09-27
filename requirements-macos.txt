@@ -1,0 +1,12 @@
+# macOS-specific requirements
+-r requirements-base.txt
+# PaddleOCR on macOS (using CPU version)
+paddlepaddle==2.6.2
+paddleocr==2.7.3
+# Apple Vision framework for native OCR (PyObjC)
+pyobjc-framework-Vision>=10.2
+pyobjc-framework-Cocoa>=10.2
+pyobjc-core>=10.2
+# Alternative: tesseract for additional OCR support
+# pytesseract>=0.3.10
+# tesseract>=4.0  # system package

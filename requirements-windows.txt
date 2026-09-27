@@ -1,0 +1,6 @@
+# Windows-specific requirements
+-r requirements-base.txt
+pywin32>=306
+winsdk>=1.0.0b10
+paddlepaddle==2.6.2
+paddleocr==2.7.3

@@ -1,0 +1,6 @@
+# Development requirements
+-r requirements-base.txt
+pytest>=8.0
+ruff>=0.4
+pytest-asyncio>=0.23
+pytest-mock>=3.12

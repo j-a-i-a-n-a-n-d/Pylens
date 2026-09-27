@@ -7,32 +7,39 @@ from tempfile import gettempdir
 
 from PIL import Image, ImageDraw
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
-from pylens.capture.region import RegionSelector
-from pylens.capture.window import capture_foreground_window
+from pylens.capture import create_capture_backend, create_region_selector
 from pylens.models import CaptureResult
-from pylens.native.dpi import set_dpi_awareness
-from pylens.native.hotkeys import HotkeyManager
+from pylens.dpi import create_dpi_backend
+from pylens.hotkeys import create_hotkey_backend
 from pylens.ocr.cache import get_shared_ocr_adapter, warm_ocr_adapter
 from pylens.ocr.tiles import recognize_regions
 from pylens.overlay.busy import BusyHud
 from pylens.overlay.window import OverlayDisplayOptions, OverlayWindow
-from pylens.settings import Settings, appdata_dir
+from pylens.settings import Settings
 from pylens.translate.factory import create_translator
 from pylens.translate.service import TranslationService
 from pylens.ui_settings import SettingsDialog
 
 
 def _make_tray_icon() -> QIcon:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse((4, 4, 60, 60), fill=(0, 120, 215, 255))
-    draw.rectangle((18, 28, 46, 36), fill=(255, 255, 255, 255))
-    path = appdata_dir() / "tray.png"
-    img.save(path)
-    return QIcon(str(path))
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QColor(0, 120, 215, 255))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(4, 4, 56, 56)
+    painter.setBrush(QColor(255, 255, 255, 255))
+    painter.drawRect(18, 28, 28, 8)
+    painter.end()
+    return QIcon(pixmap)
+
+
+from pylens.logger import get_logger, log_debug, log_error, log_info, log_warning
+from pylens.platform import current_platform, Platform
 
 
 class PipelineWorker(QObject):
@@ -48,9 +55,11 @@ class PipelineWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
+            log_info(f"Running OCR ({self._settings.ocr_engine}, {self._settings.ocr_language}, profile={self._settings.ocr_profile})...")
             if self._settings.debug_save_capture:
                 out = Path(gettempdir()) / "pylens_last_capture.png"
                 self._capture.image.save(out)
+                log_debug(f"Saved debug capture to {out}")
 
             adapter = get_shared_ocr_adapter(
                 self._settings.ocr_engine,
@@ -69,15 +78,17 @@ class PipelineWorker(QObject):
             )
             if self._settings.debug_ocr:
                 from pylens.ocr.debug import ocr_debug_root
-
-                # Always remind where to look when investigating OCR quality.
-                print(f"[PyLens] OCR debug dumps: {ocr_debug_root()}", flush=True)
+                log_debug(f"OCR debug dumps: {ocr_debug_root()}")
             if not blocks:
+                log_warning("No text detected in capture region.")
                 self.failed.emit("No text detected.")
                 return
+            log_info(f"OCR detected {len(blocks)} text blocks. Translating with {self._settings.translation_engine} -> {self._settings.target_lang}...")
             blocks = self._translator.translate_blocks(blocks, self._settings.target_lang)
+            log_info("Translation completed. Rendering overlay.")
             self.finished.emit(self._capture, blocks)
         except Exception as ex:
+            log_error(f"Pipeline failed: {ex}")
             self.failed.emit(f"{ex}\n\n{traceback.format_exc()}")
 
 
@@ -86,18 +97,26 @@ class PyLensApp(QObject):
         super().__init__()
         self.app = qt_app
         self.settings = Settings.load()
+        log_info("Initializing PyLens...")
+        log_info(f"Settings: target_lang='{self.settings.target_lang}', ocr='{self.settings.ocr_engine}', translation='{self.settings.translation_engine}'")
+
         self.translator = TranslationService(
             engine=create_translator(self.settings.translation_engine)
         )
-        self.hotkeys = HotkeyManager()
+
+        # Platform-specific backends
+        self._capture_backend = create_capture_backend()
+        self._hotkey_backend = create_hotkey_backend()
+        self._dpi_backend = create_dpi_backend()
+
         self._overlay: OverlayWindow | None = None
-        self._selector: RegionSelector | None = None
+        self._selector = None
         self._busy = False
         self._busy_hud: BusyHud | None = None
         self._thread: QThread | None = None
         self._worker: PipelineWorker | None = None
 
-        # Hidden window owns HWND for RegisterHotKey
+        # Hidden window for hotkey binding (Windows) or event handling
         self._host = QWidget()
         self._host.setWindowTitle("PyLensHost")
         self._host.resize(1, 1)
@@ -105,6 +124,7 @@ class PyLensApp(QObject):
         self._host.show()
         self._host.hide()
 
+        # System tray
         self._tray = QSystemTrayIcon(_make_tray_icon(), self.app)
         menu = QMenu()
         menu.addAction("Translate region…", self.start_region)
@@ -116,23 +136,27 @@ class PyLensApp(QObject):
         self._tray.setToolTip("PyLens")
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
+        log_info("System tray icon active.")
 
+        # Bind hotkeys
         hwnd = int(self._host.winId())
-        self.hotkeys.bind_to_widget(hwnd)
+        self._hotkey_backend.bind_to_window(hwnd)
         self._register_hotkeys()
 
         if not self.settings.first_run_done or not self.settings.privacy_acknowledged:
             self.open_settings()
 
-        # Warm OCR + Argos off the UI thread so the first capture is not cold.
+        # Warm OCR + Argos off the UI thread
         QTimer.singleShot(250, self._start_warmup)
 
     def _register_hotkeys(self) -> None:
-        self.hotkeys.unregister_all()
+        self._hotkey_backend.unregister_all()
         try:
-            self.hotkeys.register(self.settings.hotkey_region, self.start_region)
-            self.hotkeys.register(self.settings.hotkey_window, self.start_window)
+            r_id = self._hotkey_backend.register(self.settings.hotkey_region, self.start_region)
+            w_id = self._hotkey_backend.register(self.settings.hotkey_window, self.start_window)
+            log_info(f"Registered hotkeys: Region='{self.settings.hotkey_region}' (id={r_id}), Window='{self.settings.hotkey_window}' (id={w_id})")
         except OSError as ex:
+            log_error(f"Hotkey registration failed: {ex}")
             self._tray.showMessage("PyLens", f"Hotkey registration failed: {ex}", QSystemTrayIcon.MessageIcon.Warning)
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -140,8 +164,19 @@ class PyLensApp(QObject):
             self.open_settings()
 
     def open_settings(self) -> None:
-        dlg = SettingsDialog(self.settings, self._host)
+        log_info("Opening Settings dialog...")
+        if current_platform() == Platform.MACOS:
+            try:
+                from Cocoa import NSApplication
+                NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            except Exception:
+                pass
+        dlg = SettingsDialog(self.settings, None)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
         if dlg.exec():
+            log_info("Settings updated and saved.")
             if self._overlay is not None:
                 self._overlay.close()
                 self._overlay = None
@@ -152,7 +187,14 @@ class PyLensApp(QObject):
             self._register_hotkeys()
 
     def quit(self) -> None:
-        self.hotkeys.unregister_all()
+        log_info("Quitting PyLens...")
+        if hasattr(self, "_warm_thread") and self._warm_thread is not None and self._warm_thread.isRunning():
+            self._warm_thread.quit()
+            self._warm_thread.wait(1000)
+        if self._thread is not None and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(1000)
+        self._hotkey_backend.unregister_all()
         self.translator.close()
         self._tray.hide()
         self.app.quit()
@@ -169,20 +211,18 @@ class PyLensApp(QObject):
             self._busy_hud.hide()
 
     def start_region(self) -> None:
+        log_info("Hotkey triggered: Start region translation")
         if self._busy:
+            log_warning("Ignored start_region: busy")
             return
         if not self._precheck():
             return
         self._busy = True
-        # No HUD during marquee — it would sit on top of the region selector.
-        self._selector = RegionSelector()
-        self._selector.selected.connect(self._on_capture_ready)
-        self._selector.cancelled.connect(self._on_region_cancelled)
+        self._selector = create_region_selector(self._on_capture_ready, self._on_region_cancelled)
         self._selector.show()
-        self._selector.raise_()
-        self._selector.activateWindow()
 
     def _on_region_cancelled(self) -> None:
+        log_info("Region selection cancelled.")
         self._busy = False
         self._selector = None
         self._hide_busy_hud()
@@ -197,17 +237,20 @@ class PyLensApp(QObject):
             @Slot()
             def run(self) -> None:
                 try:
+                    log_info(f"Background warmup started (OCR: {settings.ocr_engine}, Translation: {settings.translation_engine})...")
                     target = settings.target_lang.split("-")[0].lower()
                     source = "ja" if target == "en" else "en"
                     if settings.translation_engine == "argos" and target not in ("en", "ja"):
                         source, target = "ja", "en"
                     translator.prepare(source, target)
                     warm_ocr_adapter(settings.ocr_engine, settings.ocr_language)
-                except Exception:
-                    pass
+                    log_info("Background warmup completed successfully.")
+                except Exception as ex:
+                    log_warning(f"Background warmup note: {ex}")
                 self.finished.emit()
 
         self._warm_thread = QThread(self)
+        self._warm_thread.setStackSize(16 * 1024 * 1024)
         self._warm_worker = _WarmWorker()
         self._warm_worker.moveToThread(self._warm_thread)
         self._warm_thread.started.connect(self._warm_worker.run)
@@ -216,15 +259,19 @@ class PyLensApp(QObject):
         self._warm_thread.start()
 
     def start_window(self) -> None:
+        log_info("Hotkey triggered: Start active window translation")
         if self._busy:
+            log_warning("Ignored start_window: busy")
             return
         if not self._precheck():
             return
+
         # Capture BEFORE showing HUD — otherwise GetForegroundWindow returns our UI.
         exclude = {int(self._host.winId())}
         if self._busy_hud is not None:
             exclude.add(int(self._busy_hud.winId()))
-        capture = capture_foreground_window(exclude_hwnds=exclude)
+
+        capture = self._capture_backend.capture_window(exclude_hwnds=exclude)
         if capture is None:
             self._tray.showMessage(
                 "PyLens",
@@ -277,6 +324,7 @@ class PyLensApp(QObject):
         self._show_busy_hud("OCR + translating…")
 
         self._thread = QThread()
+        self._thread.setStackSize(16 * 1024 * 1024)
         self._worker = PipelineWorker(capture, self.settings, self.translator)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -331,16 +379,28 @@ class PyLensApp(QObject):
 
 
 def main() -> int:
-    set_dpi_awareness()
+    import threading
+    try:
+        threading.stack_size(16 * 1024 * 1024)
+    except Exception:
+        pass
+
+    # Set DPI awareness early
+    dpi_backend = create_dpi_backend()
+    dpi_backend.set_dpi_awareness()
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("PyLens")
+
+    # Check system tray availability
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.critical(None, "PyLens", "System tray is not available.")
         return 1
+
     controller = PyLensApp(app)
     _ = controller  # keep alive
     return app.exec()

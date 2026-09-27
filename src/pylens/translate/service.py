@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pylens.models import TextBlock
 from pylens.paths import default_glossary_path
-from pylens.settings import appdata_dir
+from pylens.settings import config_dir as appdata_dir
 from pylens.text.classify import classify_span
 from pylens.text.fragments import is_untranslatable_fragment
 from pylens.text.glossary import Glossary

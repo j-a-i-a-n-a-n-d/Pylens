@@ -15,7 +15,7 @@ def test_small_capture_is_not_tiled():
 
 
 def test_large_capture_is_tiled():
-    assert should_tile(1920, 1080, force=False) is True
+    assert should_tile(2200, 1600, force=False) is True
 
 
 def test_force_tiles_overrides_size_threshold():

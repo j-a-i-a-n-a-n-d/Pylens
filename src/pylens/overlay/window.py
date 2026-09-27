@@ -483,6 +483,7 @@ class OverlayWindow(QWidget):
 
         originals = [w.block.original for w in self._boxes]
         self._retarget_thread = QThread(self)
+        self._retarget_thread.setStackSize(16 * 1024 * 1024)
         self._retarget_worker = _RetargetWorker(originals, self._target, self._translator)
         self._retarget_worker.moveToThread(self._retarget_thread)
         self._retarget_thread.started.connect(self._retarget_worker.run)

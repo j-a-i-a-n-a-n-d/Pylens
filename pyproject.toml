@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pylens"
 version = "0.1.0"
-description = "WinLens-like in-place screen translator for Windows (region + active window)"
+description = "Cross-platform in-place screen translator (Windows, macOS, Linux)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -16,24 +16,67 @@ dependencies = [
   "mss>=9.0",
   "httpx>=0.27",
   "pydantic>=2.6",
-  "pywin32>=306",
-  "winsdk>=1.0.0b10",
+  "numpy>=1.24,<2.0",
+  "protobuf==3.20.2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4"]
-# Japanese OCR only — pin 2.x for smaller deps + stable classic API.
-# Models are stored under <project>/models/paddle/ (not ~/.paddleocr).
+# Windows-specific dependencies
+windows = [
+  "pywin32>=306",
+  "winsdk>=1.0.0b10",
+  "paddlepaddle==2.6.2",
+  "paddleocr==2.7.3",
+]
+
+# macOS-specific dependencies
+macos = [
+  "paddlepaddle==2.6.2",
+  "paddleocr==2.7.3",
+  "pyobjc-framework-Vision>=10.2",
+  "pyobjc-framework-Cocoa>=10.2",
+  "pyobjc-framework-Quartz>=10.2",
+  "pyobjc-core>=10.2",
+]
+
+# Linux-specific dependencies
+linux = [
+  "paddlepaddle==2.6.2",
+  "paddleocr==2.7.3",
+  "python-xlib>=0.33",
+  "ewmh>=0.1.6",
+  "dbus-python>=1.3",
+]
+
+# Cross-platform OCR (PaddleOCR) - works on all platforms
 paddle = [
   "paddlepaddle==2.6.2",
   "paddleocr==2.7.3",
-  "numpy>=1.24,<2.0",
-  # Paddle 2.6 ships old _pb2 stubs; protobuf 4+ breaks import.
-  # Windows wheel constraint is <=3.20.2.
-  "protobuf==3.20.2",
 ]
-# Install from organization-approved offline wheels only.
+
+# Offline translation with Argos Translate
 offline = ["argostranslate>=1.9"]
+
+# Development dependencies
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.4",
+  "pytest-asyncio>=0.23",
+  "pytest-mock>=3.12",
+]
+
+# All platforms combined (for CI/testing)
+all = [
+  "pywin32>=306; sys_platform == 'win32'",
+  "winsdk>=1.0.0b10; sys_platform == 'win32'",
+  "pyobjc-framework-Vision>=10.2; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=10.2; sys_platform == 'darwin'",
+  "pyobjc-framework-Quartz>=10.2; sys_platform == 'darwin'",
+  "pyobjc-core>=10.2; sys_platform == 'darwin'",
+  "python-xlib>=0.33; sys_platform == 'linux'",
+  "ewmh>=0.1.6; sys_platform == 'linux'",
+  "dbus-python>=1.3; sys_platform == 'linux'",
+]
 
 [project.scripts]
 pylens = "pylens.app:main"

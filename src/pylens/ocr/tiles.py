@@ -16,7 +16,7 @@ def should_tile(width: int, height: int, force: bool = False) -> bool:
     """Tile only very large captures; never for normal UI regions."""
 
     if force:
-        return width >= _TILE_MIN_WIDTH or height >= _TILE_MIN_HEIGHT
+        return True
     return width >= _TILE_MIN_WIDTH and height >= _TILE_MIN_HEIGHT
 
 

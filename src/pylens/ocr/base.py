@@ -9,8 +9,10 @@ from pylens.models import TextBlock
 
 
 class OcrEngineId(str, Enum):
-    WINDOWS = "windows"
     PADDLE = "paddle"
+    WINDOWS = "windows"
+    MACOS_VISION = "macos_vision"
+    LINUX_TESSERACT = "linux_tesseract"
 
     @classmethod
     def from_value(cls, value: str) -> OcrEngineId:

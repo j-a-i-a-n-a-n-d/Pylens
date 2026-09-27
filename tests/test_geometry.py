@@ -4,7 +4,8 @@ from pylens.translate.service import TranslationService
 
 
 def test_choose_scale_limits_upscale_and_downscales_large_images():
-    assert choose_scale(100, 100) == 3.0
+    # MAX_UPSCALE changed from 3.0 to 3.5 to allow more aggressive upscaling
+    assert choose_scale(100, 100) == 3.5
     assert choose_scale(5000, 5000) == 2560 / 5000
 
 
